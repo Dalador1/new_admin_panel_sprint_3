@@ -1,0 +1,121 @@
+version: "3.9"
+
+networks:
+  custom_bridge:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    networks:
+      - custom_bridge
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    expose:
+      - "5432"
+    volumes:
+      - $HOME/postgresql/data:/var/lib/postgresql/data
+      - ./movies_database.sql:/docker-entrypoint-initdb.d/movies_database.sql
+      - ./postgres_configs/postgresql.conf:/var/lib/postgresql/data/postgresql.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: movies_admin_web
+    networks:
+      - custom_bridge    
+    expose:
+      - "8000"
+    volumes:
+      - .:/app
+      - static_volume:/app/static
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ./entrypoint.sh
+
+  nginx:
+    image: nginx:latest
+    container_name: movies_admin_nginx
+    networks:
+      - custom_bridge
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx_configs/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx_configs/site.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_volume:/app/static
+    depends_on:
+      - web
+
+  sync:
+    build:
+      context: ./sqlite_to_postgres
+      dockerfile: Dockerfile
+    container_name: sync
+    networks:
+      - custom_bridge    
+    volumes:
+      - ./sqlite_to_postgres:/app
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m  # Установить память JVM
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+  redis:
+    image: redis:6.2
+    container_name: redis
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+
+  etl:
+    build:
+      context: ./etl
+      dockerfile: Dockerfile
+    container_name: etl
+    networks:
+      - custom_bridge    
+    volumes:
+      - ./etl:/app
+    env_file:
+      - .env
+    depends_on:
+      - elasticsearch
+    command: sh -c "./wait_for_es.sh && python etl.py"
+
+volumes:
+  postgres_data:
+  static_volume:
+  es_data:
+  redis_data:

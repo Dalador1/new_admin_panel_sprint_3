@@ -1,0 +1,4 @@
+comment = 'JSON output plugin for changeset extraction'
+default_version = '1.0'
+module_pathname = '$libdir/wal2json'
+relocatable = false
